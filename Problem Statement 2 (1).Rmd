@@ -1,0 +1,217 @@
+---
+title: "Problem Statement 2"
+author: "Damario Abdalla, Drew Levitt, Si Aung N"
+date: "2024-12-09"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+#Install for Local non Parametric RD
+```{r}
+install.packages("rdrobust")
+```
+
+#Load Library
+```{r}
+library(haven)
+library(dplyr)
+library(broom)
+library(rdrobust)
+library(ggplot2)
+```
+#Load Data
+```{r}
+# Replace 'path_to_file.dta' with the actual file path
+data <- read_dta("all.dta")
+```
+
+#Check Data
+```{r}
+data
+```
+1. Calculate mortality rates due to any cause for individuals in the sample who are 1–24 months above
+the MLDA and for those who are 1–24 months below the MLDA. Does this difference between these
+two groups plausibly describe the causal effect of reaching the MLDA on mortality? Why or why not?
+```{r}
+# Filter for individuals 1–24 months above and below the MLDA
+above_mlda <- subset(data, agemo_mda >= 1 & agemo_mda <= 24)
+below_mlda <- subset(data, agemo_mda >= -24 & agemo_mda <= -1)
+
+# Define a function to calculate mortality rates
+calculate_mortality_rate <- function(cod_any, pop) {
+  return(100000 * cod_any / (pop / 12))
+}
+
+# Add a new column for mortality rates
+above_mlda$mortality_rate <- calculate_mortality_rate(above_mlda$cod_any, above_mlda$pop)
+below_mlda$mortality_rate <- calculate_mortality_rate(below_mlda$cod_any, below_mlda$pop)
+
+# Calculate the average mortality rates for each group
+average_above <- mean(above_mlda$mortality_rate, na.rm = TRUE)
+average_below <- mean(below_mlda$mortality_rate, na.rm = TRUE)
+
+# Display the results
+results <- data.frame(
+  Group = c("Above MLDA (1-24 months)", "Below MLDA (1-24 months)"),
+  Average_Mortality_Rate = c(average_above, average_below)
+)
+
+print(results)
+
+```
+
+In general, yes, this can be considered an estimate of the causal effect due to the arbitrary cutoff rules. In the code above, we applied a method called the Regression Discontinuity (RD) design, which is a tool for comparing individuals close to either side of a cutoff. Those above the MLDA (cutoff) are the "treatment" group, while those below the MLDA are the "control" group.
+
+As a result, comparing outcomes between these two groups provides an estimate of the causal effect. Furthermore, the observed difference in mortality rates between the two groups suggests a potential causal relationship, but it is not definitive evidence. To establish causation, additional statistical analysis is required.
+
+
+
+2. Create a scatter plot showing mortality rates due to (a) any cause and (b) motor vehicle accidents.
+Use black squares as markers for any cause of death and blue circles as markers for mortality due to
+motor vehicle accidents. Limit the plot to people who are within 2 years of the MLDA. Add a vertical
+line at the age at which driving eligibility begins.
+
+```{r}
+# Filter for individuals within 2 years of MLDA (-24 to 24 months)
+within_2_years <- subset(data, agemo_mda >= -24 & agemo_mda <= 24)
+
+# Calculate mortality rates for any cause and motor vehicle accidents
+within_2_years$mortality_rate_any <- 100000 * within_2_years$cod_any / (within_2_years$pop / 12)
+within_2_years$mortality_rate_mva <- 100000 * within_2_years$cod_MVA / (within_2_years$pop / 12)
+
+# Create the scatter plot
+ggplot(within_2_years, aes(x = agemo_mda)) +
+  # Mortality rate due to any cause (black squares)
+  geom_point(aes(y = mortality_rate_any), color = "black", shape = 15, size = 3, alpha = 0.8, show.legend = TRUE) +
+  # Mortality rate due to motor vehicle accidents (blue circles)
+  geom_point(aes(y = mortality_rate_mva), color = "blue", shape = 16, size = 3, alpha = 0.8, show.legend = TRUE) +
+  # Vertical line for driving eligibility (assumed at 12 months above MLDA)
+  geom_vline(xintercept = 12, color = "red", linetype = "dashed", size = 1, show.legend = TRUE) +
+  # Labels and theme
+  labs(
+    title = "Mortality Rates Within 2 Years of MLDA",
+    x = "Months Above or Below MLDA",
+    y = "Mortality Rate (per 100,000 people)"
+  ) +
+  theme_minimal()
+
+```
+3. Non-parametric “donut” RD. Calculate a non-parametric RD estimated effect of driving on mortality
+rates due to (a) any cause and (b) motor vehicle accidents. Calculate these estimates using four
+different bandwidths: 48, 24, 12, and 6 months. Omit the partially-treated observation
+`agemo_mda==0` from the estimation to generate what is called a “donut” RD. Use linear regression
+to calculate all these values, and report and describe this equation in your answer below. Report the
+results in a three-column table with 4 rows (one row per bandwidth). Column (1) should report the
+bandwidth, column (2) the RD estimate for all-cause mortality, and column (3) the RD estimate for
+motor vehicle accident mortality. Discuss whether/why point estimates and their precision change as
+the bandwidth becomes smaller.
+
+```{r}
+# Function for non-parametric RD using rdrobust
+calculate_rdrobust <- function(data, bandwidth) {
+  # Exclude partially treated observations (agemo_mda == 0)
+  subset_data <- data %>% filter(agemo_mda != 0)
+  
+  # Any-cause mortality
+  rd_any <- rdrobust(
+    y = subset_data$cod_any / (subset_data$pop / 12),
+    x = subset_data$agemo_mda,
+    c = 0, # Cutoff
+    kernel = "triangular",
+    h = bandwidth,
+    p = 1 # Local linear regression
+  )
+  
+  # Motor vehicle accident mortality
+  rd_mva <- rdrobust(
+    y = subset_data$cod_MVA / (subset_data$pop / 12),
+    x = subset_data$agemo_mda,
+    c = 0, # Cutoff
+    kernel = "triangular",
+    h = bandwidth,
+    p = 1
+  )
+  
+  # Extract RD estimates
+  estimate_any <- rd_any$coef[1]
+  estimate_mva <- rd_mva$coef[1]
+  
+  return(c(bandwidth, estimate_any, estimate_mva))
+}
+
+# Bandwidths to evaluate
+bandwidths <- c(48, 24, 12, 6)
+
+# Apply the function for all bandwidths
+results <- do.call(rbind, lapply(bandwidths, function(b) calculate_rdrobust(data, b)))
+
+# Convert results into a table
+results_table <- as.data.frame(results)
+colnames(results_table) <- c("Bandwidth", "RD_Estimate_Any_Cause", "RD_Estimate_MVA")
+
+# Display results table
+print(results_table)
+
+```
+Point estimates and their precision change as the bandwidth becomes smaller because less data is being used. In this case, non-parametric analysis focuses on using local data. When conducting linear regression, two important principles contribute to model accuracy: the law of large numbers and the central limit theorem. Both principles state that larger sample sizes lead to more accurate and reliable models.
+
+In this context, as the bandwidth becomes smaller, the accuracy decreases because there are fewer samples available within the selected bandwidth.
+
+
+4. Parametric “donut” RD. Calculate a parametric RD estimated effect of driving on mortality rates due
+to (a) any cause and (b) motor vehicle accidents. Allow for linear trends on either side of the cutoff.
+Calculate these estimates using four different bandwidths: 48, 24, 12, and 6 months. Omit the
+partially-treated observation `agemo_mda==0` from the estimation to perform a “donut” RD. Use linear regression to calculate all these values, and report and describe this equation in your answer
+below. Report the results in a three-column table with 4 rows (one row per bandwidth). Column (1)
+should report the bandwidth, column (2) the RD estimate for all-cause mortality, and column (3) the
+RD estimate for motor vehicle accident mortality. Discuss whether/why point estimates and their
+precision change as the bandwidth becomes smaller. How do these parametric estimates compare to
+the non-parametric RD estimates?
+```{r}
+# Create the "donut" dataset excluding `agemo_mda == 0`
+donut_data <- data %>% filter(agemo_mda != 0)
+
+# Function to calculate parametric RD estimates
+calculate_parametric_rd <- function(data, bandwidth) {
+  # Filter data within the bandwidth
+  subset_data <- data %>% filter(agemo_mda >= -bandwidth & agemo_mda <= bandwidth)
+  
+  # Create indicator for being above MLDA
+  subset_data <- subset_data %>% mutate(above_mlda = ifelse(agemo_mda > 0, 1, 0))
+  
+  # Linear regression for all-cause mortality
+  model_any <- lm(
+    100000 * cod_any / (pop / 12) ~ above_mlda + agemo_mda + above_mlda:agemo_mda,
+    data = subset_data
+  )
+  estimate_any <- coef(model_any)["above_mlda"]
+  
+  # Linear regression for motor vehicle accident mortality
+  model_mva <- lm(
+    100000 * cod_MVA / (pop / 12) ~ above_mlda + agemo_mda + above_mlda:agemo_mda,
+    data = subset_data
+  )
+  estimate_mva <- coef(model_mva)["above_mlda"]
+  
+  # Return results
+  return(c(bandwidth, estimate_any, estimate_mva))
+}
+
+# Apply the function for each bandwidth
+bandwidths <- c(48, 24, 12, 6)
+results <- do.call(rbind, lapply(bandwidths, function(b) calculate_parametric_rd(donut_data, b)))
+
+# Create results table
+results_table <- as.data.frame(results)
+colnames(results_table) <- c("Bandwidth", "RD_Estimate_Any_Cause", "RD_Estimate_MVA")
+
+# Display results table
+print(results_table)
+
+```
+In theory, using parametric RD produces a more accurate estimate, and this is reflected in the difference compared to the non-parametric estimate. With a global sample, parametric RD provides a more accurate estimate based on the principles of the law of large numbers and the central limit theorem. Additionally, parametric methods assume that the data follows specific functional forms, which further enhances the accuracy of the estimates.
+
+It is possible for the estimates to differ between the below and above bandwidths, but this variation is part of what makes the parametric approach accurate. However, it is important to note that while more data reduces bias, it can also increase variance. This trade-off might explain why the parametric estimate tends to be larger.
